@@ -1,0 +1,23 @@
+{
+  "name": "okta-mcp-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "okta-mcp-bridge": "./dist/okta-mcp-bridge"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test",
+    "build": "bun build src/index.ts --compile --outfile dist/okta-mcp-bridge",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "jose": "^5.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "bun-types": "latest"
+  }
+}
