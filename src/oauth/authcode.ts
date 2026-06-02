@@ -79,6 +79,14 @@ export function authorize(
   const { verifier, challenge } = generatePkce();
   const state = base64url(randomBytes(32));
 
+  if (config.OKTA_REDIRECT_PORT === 0) {
+    // Okta matches the redirect URI exactly, including the port, and does not
+    // honor ephemeral/dynamic loopback ports (even with a wildcard registered).
+    logger.warn("oauth.authorize.ephemeral_port", {
+      note: "Okta requires a fixed, pre-registered redirect port; set OKTA_REDIRECT_PORT to match the redirect URI registered in Okta",
+    });
+  }
+
   return new Promise<AuthorizeResult>((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;

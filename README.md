@@ -46,7 +46,7 @@ The DPoP key and tokens are **not** configured here — they live encrypted unde
 | `OKTA_CLIENT_ID` | ✅ | — | `--client-id` | Okta OIDC app client ID. |
 | `AGENT_ID` | ✅ | — | `--agent-id` | Adapter agent id; sent as `X-MCP-Agent`. |
 | `OKTA_ISSUER` | | (adapter discovery) | `--issuer` | If set, mint the token at Okta directly (recommended; see below). |
-| `OKTA_REDIRECT_PORT` | | `0` (ephemeral) | `--redirect-port` | Loopback redirect port for the auth-code flow. |
+| `OKTA_REDIRECT_PORT` | (with Okta, yes) | `0` (ephemeral) | `--redirect-port` | Loopback redirect port. **Okta requires a fixed port** matching the registered redirect URI exactly — pin one (e.g. `8765`); the `0` default does not work with Okta. |
 | `OKTA_SCOPES` | | `openid offline_access` | `--scopes` | `offline_access` enables refresh tokens. |
 | `DPOP_ALG` | | `ES256` | `--alg` | One of `ES256` / `ES384` / `RS256`. |
 | `DPOP_KEY_MODE` | | `persistent` | `--key-mode` | `persistent` (key on disk) or `ephemeral` (re-login each start). |
@@ -64,6 +64,7 @@ The DPoP key and tokens are **not** configured here — they live encrypted unde
 export ADAPTER_BASE_URL=https://adapter.example.com
 export OKTA_CLIENT_ID=0oaXXXXXXXXXXXXXX
 export AGENT_ID=my-agent
+export OKTA_REDIRECT_PORT=8765   # must match the redirect URI registered in Okta exactly
 
 okta-mcp-bridge login     # opens a browser; completes Okta's DPoP nonce handshake
 okta-mcp-bridge doctor    # config, resolved endpoints, token status, adapter reachability
@@ -100,6 +101,11 @@ Secrets are never logged — only thumbprints (`jkt`) and lengths. A single stra
 - **401 on every authed call.** The adapter agent likely has `require_dpop=true` but the
   `X-MCP-Agent` value (`AGENT_ID`) doesn't match an agent whose `client_id` equals your
   Okta app — or the token isn't DPoP-bound. Check the adapter's `auth.dpop.*` audit events.
+- **`redirect_uri` mismatch / login never returns.** Okta matches the loopback redirect URI
+  **exactly, including the port**, and does not honor ephemeral/dynamic ports — even with a
+  wildcard registered. Set `OKTA_REDIRECT_PORT` to a fixed port and register
+  `http://127.0.0.1:<port>/callback` in the Okta app exactly. The `0` (ephemeral) default
+  will not work with Okta.
 - **`htu` mismatch behind a proxy/ALB.** Set `ADAPTER_BASE_URL` to the adapter's **public**
   external URL, not the dialed host. The proof's `htu` must byte-match what the adapter
   recomputes, or you'll see `auth.dpop.rejected`.

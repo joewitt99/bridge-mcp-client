@@ -22,16 +22,22 @@ Copy the **Client ID** → `OKTA_CLIENT_ID`.
 
 ### Redirect URI
 
-Add a loopback redirect URI:
+Add a loopback redirect URI with a **fixed port**:
 
 ```
 http://127.0.0.1:<port>/callback
 ```
 
-The bridge defaults to an **ephemeral port** (`OKTA_REDIRECT_PORT=0`). Okta matches
-loopback redirect URIs by host+path and ignores the port (RFC 8252 §7.3), so registering
-`http://127.0.0.1/callback` is sufficient. If your org requires an exact port, pin one with
-`OKTA_REDIRECT_PORT` and register that.
+> **Okta requires an exact, fixed port.** Despite RFC 8252 §7.3 (which says the
+> authorization server *should* allow any loopback port), Okta matches the redirect URI
+> exactly **including the port**, and does **not** honor ephemeral/dynamic ports — even with
+> a wildcard redirect URI registered. So:
+>
+> - Pick a fixed port (e.g. `8765`) and set `OKTA_REDIRECT_PORT=8765`.
+> - Register that **exact** URI in Okta: `http://127.0.0.1:8765/callback`.
+>
+> The bridge's default `OKTA_REDIRECT_PORT=0` (ephemeral) will **not** work against Okta —
+> pin a port. Make sure the chosen port is free on the machine that runs `login`.
 
 ### Scopes
 
@@ -75,6 +81,7 @@ With `require_dpop=true`, the adapter rejects any non-DPoP call to this agent
 export ADAPTER_BASE_URL=https://adapter.example.com
 export OKTA_CLIENT_ID=0oaXXXXXXXXXXXXXX
 export AGENT_ID=my-agent
+export OKTA_REDIRECT_PORT=8765                                # must match the registered redirect URI
 export OKTA_ISSUER=https://your-org.okta.com/oauth2/default   # recommended
 
 okta-mcp-bridge login     # browser opens; Okta DPoP nonce handshake completes

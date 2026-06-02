@@ -11,6 +11,7 @@ claude mcp add okta-bridge -- \
   env ADAPTER_BASE_URL=https://adapter.example.com \
       OKTA_CLIENT_ID=0oaXXXXXXXXXXXXXX \
       AGENT_ID=my-agent \
+      OKTA_REDIRECT_PORT=8765 \
       OKTA_ISSUER=https://your-org.okta.com/oauth2/default \
   /absolute/path/to/dist/okta-mcp-bridge
 ```
@@ -32,6 +33,7 @@ registration looks like:
         "ADAPTER_BASE_URL": "https://adapter.example.com",
         "OKTA_CLIENT_ID": "0oaXXXXXXXXXXXXXX",
         "AGENT_ID": "my-agent",
+        "OKTA_REDIRECT_PORT": "8765",
         "OKTA_ISSUER": "https://your-org.okta.com/oauth2/default"
       }
     }
@@ -51,7 +53,7 @@ OAuth tokens are generated and stored encrypted under `BRIDGE_HOME`
 Pre-authenticate once so the first tool call doesn't block on a browser:
 
 ```bash
-ADAPTER_BASE_URL=... OKTA_CLIENT_ID=... AGENT_ID=... OKTA_ISSUER=... \
+ADAPTER_BASE_URL=... OKTA_CLIENT_ID=... AGENT_ID=... OKTA_REDIRECT_PORT=8765 OKTA_ISSUER=... \
   /absolute/path/to/dist/okta-mcp-bridge login
 ```
 

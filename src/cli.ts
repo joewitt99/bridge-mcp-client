@@ -236,6 +236,10 @@ async function doctor(config: Config, deps: CliDeps, logger: Logger): Promise<nu
   out(`  client_id:  ${config.OKTA_CLIENT_ID}`);
   out(`  agent_id:   ${config.AGENT_ID}`);
   out(`  issuer:     ${config.OKTA_ISSUER ?? "(adapter discovery)"}`);
+  out(`  redirect:   http://127.0.0.1:${config.OKTA_REDIRECT_PORT}/callback`);
+  if (config.OKTA_REDIRECT_PORT === 0) {
+    out("  WARNING:    OKTA_REDIRECT_PORT=0 (ephemeral) — Okta needs a fixed, pre-registered port; set OKTA_REDIRECT_PORT");
+  }
   out(`  alg:        ${config.DPOP_ALG}`);
   out(`  bridge_home:${config.BRIDGE_HOME}`);
   out(`  key jkt:    ${await keyManager.jkt()}`);
