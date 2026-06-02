@@ -73,6 +73,17 @@ export class DpopTokenClient {
       htu: this.endpoints.tokenEndpoint,
       nonce: opts.nonce,
     });
+    // Safe to log: grant_type and client_id are public (client_id is in the
+    // authorize URL too). The code, verifier, and refresh_token are NOT logged.
+    this.logger.debug("oauth.token.request", {
+      token_endpoint: this.endpoints.tokenEndpoint,
+      grant_type: params.grant_type,
+      client_id: params.client_id,
+      has_code: Boolean(params.code),
+      has_code_verifier: Boolean(params.code_verifier),
+      has_refresh_token: Boolean(params.refresh_token),
+      has_nonce: Boolean(opts.nonce),
+    });
     const res = await this.doFetch(this.endpoints.tokenEndpoint, {
       method: "POST",
       headers: {
