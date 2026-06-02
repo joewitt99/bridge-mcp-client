@@ -9,17 +9,11 @@
 //
 // Secrets at rest: the DPoP private key is encrypted (AES-256-GCM) with a key
 // derived from a per-machine seed and written chmod 600. Never log key/proof
-// material — only thumbprints and lengths. (P04 will factor the crypto/seed
-// helpers out into src/crypto.ts; they are kept self-contained here for now.)
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+// material — only thumbprints and lengths. The seal/seed helpers live in
+// src/crypto.ts (shared with the token store).
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   calculateJwkThumbprint,
   exportJWK,
@@ -31,6 +25,7 @@ import {
 } from "jose";
 import type { Config, DpopAlg } from "./config.ts";
 import { logger as defaultLogger, type Logger } from "./logger.ts";
+import { ensureBridgeHome, openJson, sealJson, type Sealed } from "./crypto.ts";
 
 /** Private JWK members that must never appear in a public JWK / proof header. */
 const PRIVATE_JWK_PARAMS = ["d", "p", "q", "dp", "dq", "qi", "k"] as const;
@@ -71,14 +66,7 @@ export interface CreateProofOptions {
   nonce?: string;
 }
 
-interface EncryptedKeyFile {
-  alg: DpopAlg;
-  iv: string; // base64
-  ciphertext: string; // base64
-  tag: string; // base64
-}
-
-const SEED_INFO = "okta-mcp-bridge dpop key v1";
+type EncryptedKeyFile = { alg: DpopAlg } & Sealed;
 
 export class DpopKeyManager {
   private constructor(
@@ -166,57 +154,15 @@ export class DpopKeyManager {
   }
 }
 
-// --- seed + encryption helpers (extracted into src/crypto.ts in P04) ---------
-
-function ensureBridgeHome(home: string): void {
-  if (!existsSync(home)) mkdirSync(home, { recursive: true, mode: 0o700 });
-  chmodSync(home, 0o700);
-}
-
-/** Read (or create chmod-600) the 32-byte per-machine seed. */
-function readSeed(home: string): Buffer {
-  const seedPath = join(home, ".seed");
-  if (!existsSync(seedPath)) {
-    const seed = randomBytes(32);
-    writeFileSync(seedPath, seed, { mode: 0o600 });
-    chmodSync(seedPath, 0o600);
-    return seed;
-  }
-  return readFileSync(seedPath);
-}
-
-/** Derive the AES-256 key from the seed via HKDF-SHA256. */
-function deriveKey(home: string): Buffer {
-  const seed = readSeed(home);
-  const derived = hkdfSync("sha256", seed, Buffer.alloc(0), SEED_INFO, 32);
-  return Buffer.from(derived);
-}
+// --- key file persistence (encryption lives in src/crypto.ts) ----------------
 
 function saveEncryptedKey(home: string, keyPath: string, alg: DpopAlg, privateJwk: JWK): void {
-  const key = deriveKey(home);
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const plaintext = Buffer.from(JSON.stringify(privateJwk), "utf8");
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  const file: EncryptedKeyFile = {
-    alg,
-    iv: iv.toString("base64"),
-    ciphertext: ciphertext.toString("base64"),
-    tag: tag.toString("base64"),
-  };
+  const file: EncryptedKeyFile = { alg, ...sealJson(home, privateJwk) };
   writeFileSync(keyPath, JSON.stringify(file), { mode: 0o600 });
   chmodSync(keyPath, 0o600);
 }
 
 function loadEncryptedKey(home: string, keyPath: string): JWK {
   const file = JSON.parse(readFileSync(keyPath, "utf8")) as EncryptedKeyFile;
-  const key = deriveKey(home);
-  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(file.iv, "base64"));
-  decipher.setAuthTag(Buffer.from(file.tag, "base64"));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(file.ciphertext, "base64")),
-    decipher.final(),
-  ]);
-  return JSON.parse(plaintext.toString("utf8")) as JWK;
+  return openJson<JWK>(home, file);
 }
