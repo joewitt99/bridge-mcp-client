@@ -38,6 +38,8 @@ interface TokenResponse {
 interface TokenHttpResult {
   status: number;
   json: TokenResponse | null;
+  /** Raw response body (kept so non-JSON error bodies aren't lost). */
+  raw: string;
   dpopNonce?: string;
   wwwAuthenticate?: string;
 }
@@ -79,15 +81,19 @@ export class DpopTokenClient {
       },
       body: new URLSearchParams(params).toString(),
     });
+    const raw = await res.text();
     let json: TokenResponse | null = null;
-    try {
-      json = (await res.json()) as TokenResponse;
-    } catch {
-      json = null;
+    if (raw) {
+      try {
+        json = JSON.parse(raw) as TokenResponse;
+      } catch {
+        json = null;
+      }
     }
     return {
       status: res.status,
       json,
+      raw,
       dpopNonce: res.headers.get("DPoP-Nonce") ?? undefined,
       wwwAuthenticate: res.headers.get("WWW-Authenticate") ?? undefined,
     };
@@ -168,8 +174,22 @@ export class DpopTokenClient {
     const body = res.json;
     const accessToken = body?.access_token;
     if (res.status < 200 || res.status >= 300 || !body || !accessToken) {
-      const err = body?.error ?? `HTTP ${res.status}`;
-      throw new Error(`token request failed: ${err}`);
+      // Surface the server's reason — OAuth error bodies are diagnostic, not secret.
+      this.logger.error("oauth.token.request_failed", {
+        status: res.status,
+        error: body?.error,
+        error_description: body?.error_description,
+        has_dpop_nonce: Boolean(res.dpopNonce),
+        www_authenticate: res.wwwAuthenticate,
+        // Only when the body wasn't JSON we could read; capped to avoid noise.
+        body: body ? undefined : res.raw.slice(0, 300),
+      });
+      const detail = body?.error
+        ? body.error_description
+          ? `${body.error}: ${body.error_description}`
+          : body.error
+        : `HTTP ${res.status}`;
+      throw new Error(`token request failed: ${detail}`);
     }
     const jkt = await this.keyManager.jkt();
 
