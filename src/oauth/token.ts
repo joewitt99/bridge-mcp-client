@@ -140,6 +140,11 @@ export class DpopTokenClient {
     return this.buildAndPersist(res, "refreshed", set);
   }
 
+  /** Drop the persisted token set, forcing the next getAccessToken to re-acquire. */
+  clearStored(): void {
+    this.store.clear();
+  }
+
   /**
    * The single "login once, call many" entry point: return a valid stored token,
    * refresh an expired one, or run the full login (authorizeFn + exchangeCode).
