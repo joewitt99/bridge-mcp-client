@@ -11,6 +11,7 @@ import type { Config } from "./config.ts";
 import { logger as defaultLogger, type Logger } from "./logger.ts";
 import type { DpopKeyManager } from "./dpop.ts";
 import type { AuthorizeFn } from "./oauth/token.ts";
+import { withBackoff } from "./retry.ts";
 
 /** The slice of DpopTokenClient the upstream needs (eases testing). */
 export interface TokenProvider {
@@ -20,6 +21,9 @@ export interface TokenProvider {
 
 export interface UpstreamDeps {
   fetch?: typeof fetch;
+  /** Transient-failure retries inside send() (default 2). */
+  retries?: number;
+  baseMs?: number;
 }
 
 interface SendResult {
@@ -48,6 +52,8 @@ export class UpstreamClient {
   private upstreamNonce?: string;
   private readonly doFetch: typeof fetch;
   private readonly base: string;
+  private readonly retries: number;
+  private readonly baseMs: number;
 
   constructor(
     private readonly config: Config,
@@ -58,6 +64,8 @@ export class UpstreamClient {
   ) {
     this.doFetch = deps.fetch ?? fetch;
     this.base = config.ADAPTER_BASE_URL.replace(/\/+$/, "");
+    this.retries = deps.retries ?? 2;
+    this.baseMs = deps.baseMs ?? 200;
   }
 
   /** Authed forward with single-retry recovery; never throws. */
@@ -145,14 +153,19 @@ export class UpstreamClient {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.HTTP_TIMEOUT_MS);
+    const body = JSON.stringify(jsonRpc);
     let res: Response;
     try {
-      res = await this.doFetch(`${this.base}/`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(jsonRpc),
-        signal: controller.signal,
-      });
+      res = await withBackoff(
+        () =>
+          this.doFetch(`${this.base}/`, {
+            method: "POST",
+            headers,
+            body,
+            signal: controller.signal,
+          }),
+        { retries: this.retries, baseMs: this.baseMs },
+      );
     } finally {
       clearTimeout(timer);
     }
