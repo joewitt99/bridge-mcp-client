@@ -174,15 +174,18 @@ export class DpopTokenClient {
     const body = res.json;
     const accessToken = body?.access_token;
     if (res.status < 200 || res.status >= 300 || !body || !accessToken) {
-      // Surface the server's reason — OAuth error bodies are diagnostic, not secret.
+      // Surface the server's reason — token-endpoint ERROR bodies are diagnostic,
+      // not secret (a non-2xx response carries no access/refresh token). We log
+      // the full raw body on any error status so non-standard servers are visible.
+      const isError = res.status < 200 || res.status >= 300;
       this.logger.error("oauth.token.request_failed", {
         status: res.status,
+        token_endpoint: this.endpoints.tokenEndpoint,
         error: body?.error,
         error_description: body?.error_description,
         has_dpop_nonce: Boolean(res.dpopNonce),
         www_authenticate: res.wwwAuthenticate,
-        // Only when the body wasn't JSON we could read; capped to avoid noise.
-        body: body ? undefined : res.raw.slice(0, 300),
+        body: isError ? res.raw.slice(0, 500) : undefined,
       });
       const detail = body?.error
         ? body.error_description
