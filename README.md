@@ -102,6 +102,11 @@ Secrets are never logged — only thumbprints (`jkt`) and lengths. A single stra
 - **401 on every authed call.** The adapter agent likely has `require_dpop=true` but the
   `X-MCP-Agent` value (`AGENT_ID`) doesn't match an agent whose `client_id` equals your
   Okta app — or the token isn't DPoP-bound. Check the adapter's `auth.dpop.*` audit events.
+- **`use_dpop_nonce` never settles through a BFF adapter.** Okta returns the nonce in a
+  **`DPoP-Nonce` response header**; the bridge must read it to build the retry proof. If you
+  see `oauth.nonce.missing_header` (the bridge got `use_dpop_nonce` but no header), a
+  proxy/BFF is stripping `DPoP-Nonce` — configure the adapter to relay that response header
+  back to the bridge (on both the `400` challenge and the success response).
 - **`redirect_uri` mismatch / login never returns.** Okta matches the loopback redirect URI
   **exactly, including the port**, and does not honor ephemeral/dynamic ports — even with a
   wildcard registered. Set `OKTA_REDIRECT_PORT` to a fixed port and register

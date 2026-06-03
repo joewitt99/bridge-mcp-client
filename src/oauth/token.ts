@@ -130,8 +130,17 @@ export class DpopTokenClient {
   ): Promise<TokenHttpResult> {
     let res = await this.tokenRequest(params, { nonce: this.nonce });
     if (DpopTokenClient.isUseDpopNonce(res)) {
-      this.logger.info("oauth.nonce.challenge");
-      if (res.dpopNonce) this.nonce = res.dpopNonce;
+      if (res.dpopNonce) {
+        this.nonce = res.dpopNonce;
+        this.logger.info("oauth.nonce.challenge");
+      } else {
+        // The server demanded a nonce but returned no DPoP-Nonce header to use.
+        // A proxy/BFF in front of the AS is almost certainly stripping it; the
+        // retry can't carry a nonce, so it will fail the same way.
+        this.logger.warn("oauth.nonce.missing_header", {
+          note: "server returned use_dpop_nonce but no DPoP-Nonce response header — a proxy/BFF is likely stripping it; relay the DPoP-Nonce header back to the bridge",
+        });
+      }
       res = await this.tokenRequest(params, { nonce: this.nonce });
     }
     return res;

@@ -150,6 +150,22 @@ describe("DpopTokenClient nonce handshake", () => {
     expect(proof.htu).toBe(canonicalHtu(TOKEN_ENDPOINT));
   });
 
+  test("use_dpop_nonce with NO DPoP-Nonce header warns and cannot recover (proxy stripped it)", async () => {
+    const { logger, events } = recordingLogger();
+    const { client, calls } = await setup(
+      [
+        () => jsonResponse({ error: "use_dpop_nonce" }, 400), // no DPoP-Nonce header
+        () => jsonResponse({ error: "use_dpop_nonce" }, 400),
+      ],
+      logger,
+    );
+    await expect(client.exchangeCode(CODE)).rejects.toThrow(/use_dpop_nonce/);
+    expect(events.warn).toContain("oauth.nonce.missing_header");
+    // Detected the challenge and retried once, but the retry proof had no nonce.
+    expect(calls.length).toBe(2);
+    expect(proofOf(calls[1]!).nonce).toBeUndefined();
+  });
+
   test("a later use_dpop_nonce triggers another single retry", async () => {
     const { km, client, store, calls } = await setup([
       // exchange: challenge then success
