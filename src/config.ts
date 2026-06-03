@@ -12,6 +12,13 @@ export interface Config {
   AGENT_ID: string;
   /** If set, the token/authorize endpoints are taken from Okta directly. */
   OKTA_ISSUER?: string;
+  /**
+   * Override the `htu` claim on the /token DPoP proof (NOT the dialed URL). Use
+   * when a BFF/proxy adapter relays the proof to Okta: the bridge still POSTs to
+   * the adapter's token endpoint, but the proof's `htu` must match the URL the
+   * verifier (Okta) recomputes — i.e. Okta's real token endpoint.
+   */
+  OKTA_TOKEN_DPOP_HTU?: string;
   /** Loopback redirect port; 0 = ephemeral. */
   OKTA_REDIRECT_PORT: number;
   OKTA_SCOPES: string;
@@ -91,6 +98,21 @@ export function loadConfig(env: Env = process.env): Config {
     );
   }
 
+  const tokenDpopHtu = clean(env.OKTA_TOKEN_DPOP_HTU);
+  if (tokenDpopHtu !== undefined) {
+    let u: URL;
+    try {
+      u = new URL(tokenDpopHtu);
+    } catch {
+      throw new Error(`OKTA_TOKEN_DPOP_HTU is not a valid URL: "${tokenDpopHtu}"`);
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      throw new Error(
+        `OKTA_TOKEN_DPOP_HTU must be an absolute http(s) URL: "${tokenDpopHtu}"`,
+      );
+    }
+  }
+
   const timeout = clean(env.HTTP_TIMEOUT_MS)
     ? Number(env.HTTP_TIMEOUT_MS)
     : 30000;
@@ -105,6 +127,7 @@ export function loadConfig(env: Env = process.env): Config {
     OKTA_CLIENT_ID: clientId!,
     AGENT_ID: agentId!,
     OKTA_ISSUER: clean(env.OKTA_ISSUER),
+    OKTA_TOKEN_DPOP_HTU: tokenDpopHtu,
     OKTA_REDIRECT_PORT: redirectPort,
     OKTA_SCOPES: clean(env.OKTA_SCOPES) ?? "openid offline_access",
     DPOP_ALG: alg,

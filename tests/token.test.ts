@@ -195,6 +195,33 @@ describe("DpopTokenClient exchange + binding", () => {
     expect(loaded?.accessToken).toBe(set.accessToken);
   });
 
+  test("OKTA_TOKEN_DPOP_HTU overrides the proof htu without changing the dialed endpoint", async () => {
+    const oktaHtu = "https://org.okta.com/oauth2/v1/token";
+    const km = await DpopKeyManager.create(cfg(), baseLogger);
+    const store = new TokenStore(home);
+    const { fetch, calls } = mockFetch([
+      async () =>
+        jsonResponse({
+          access_token: await mintToken({ cnf: { jkt: await km.jkt() } }),
+          token_type: "DPoP",
+          expires_in: 3600,
+        }),
+    ]);
+    const client = new DpopTokenClient(
+      cfg({ OKTA_TOKEN_DPOP_HTU: oktaHtu }),
+      endpoints,
+      km,
+      store,
+      baseLogger,
+      { fetch },
+    );
+    await client.exchangeCode(CODE);
+    // Still POSTs to the adapter's token endpoint...
+    expect(calls[0]!.url).toBe(TOKEN_ENDPOINT);
+    // ...but the proof's htu is Okta's (what the verifier recomputes).
+    expect(proofOf(calls[0]!).htu).toBe(canonicalHtu(oktaHtu));
+  });
+
   test("token_type != DPoP warns but does not throw", async () => {
     const { logger, events } = recordingLogger();
     const { km, client } = await setup(

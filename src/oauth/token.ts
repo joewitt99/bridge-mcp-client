@@ -51,6 +51,8 @@ export interface TokenClientDeps {
 export class DpopTokenClient {
   private nonce?: string;
   private readonly doFetch: typeof fetch;
+  /** `htu` claim for the /token proof — Okta's endpoint when a BFF relays it. */
+  private readonly tokenHtu: string;
 
   constructor(
     private readonly config: Config,
@@ -61,6 +63,7 @@ export class DpopTokenClient {
     deps: TokenClientDeps = {},
   ) {
     this.doFetch = deps.fetch ?? fetch;
+    this.tokenHtu = config.OKTA_TOKEN_DPOP_HTU ?? endpoints.tokenEndpoint;
   }
 
   /** One POST to the token endpoint carrying a DPoP proof. */
@@ -70,13 +73,14 @@ export class DpopTokenClient {
   ): Promise<TokenHttpResult> {
     const proof = await this.keyManager.createProof({
       htm: "POST",
-      htu: this.endpoints.tokenEndpoint,
+      htu: this.tokenHtu,
       nonce: opts.nonce,
     });
     // Safe to log: grant_type and client_id are public (client_id is in the
     // authorize URL too). The code, verifier, and refresh_token are NOT logged.
     this.logger.debug("oauth.token.request", {
       token_endpoint: this.endpoints.tokenEndpoint,
+      proof_htu: this.tokenHtu,
       grant_type: params.grant_type,
       client_id: params.client_id,
       has_code: Boolean(params.code),

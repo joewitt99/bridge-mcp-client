@@ -46,6 +46,7 @@ The DPoP key and tokens are **not** configured here — they live encrypted unde
 | `OKTA_CLIENT_ID` | ✅ | — | `--client-id` | Okta OIDC app client ID. |
 | `AGENT_ID` | ✅ | — | `--agent-id` | Adapter agent id; sent as `X-MCP-Agent`. |
 | `OKTA_ISSUER` | | (adapter discovery) | `--issuer` | If set, mint the token at Okta directly (recommended; see below). |
+| `OKTA_TOKEN_DPOP_HTU` | | (= dialed token endpoint) | `--token-dpop-htu` | Override **only** the `htu` claim on the `/token` DPoP proof. For a BFF/proxy adapter that relays the proof to Okta: keep dialing the adapter, but set this to **Okta's real token endpoint** so the proof's `htu` matches what Okta recomputes. |
 | `OKTA_REDIRECT_PORT` | (with Okta, yes) | `0` (ephemeral) | `--redirect-port` | Loopback redirect port. **Okta requires a fixed port** matching the registered redirect URI exactly — pin one (e.g. `8765`); the `0` default does not work with Okta. |
 | `OKTA_SCOPES` | | `openid offline_access` | `--scopes` | `offline_access` enables refresh tokens. |
 | `DPOP_ALG` | | `ES256` | `--alg` | One of `ES256` / `ES384` / `RS256`. |
@@ -109,6 +110,12 @@ Secrets are never logged — only thumbprints (`jkt`) and lengths. A single stra
 - **`htu` mismatch behind a proxy/ALB.** Set `ADAPTER_BASE_URL` to the adapter's **public**
   external URL, not the dialed host. The proof's `htu` must byte-match what the adapter
   recomputes, or you'll see `auth.dpop.rejected`.
+- **`/token` proof rejected through a BFF adapter.** If the adapter relays the bridge's
+  `/token` DPoP proof to Okta, the proof's `htu` must match **Okta's** token endpoint (the
+  verifier), not the adapter URL the bridge dials. Set `OKTA_TOKEN_DPOP_HTU` to Okta's real
+  token endpoint (e.g. `https://your-org.okta.com/oauth2/v1/token`). The bridge keeps POSTing
+  to the adapter; only the proof's `htu` changes. Run with `LOG_LEVEL=debug` to see
+  `oauth.token.request` with `token_endpoint` (dialed) vs `proof_htu` (claimed).
 
 ## License & DCO
 

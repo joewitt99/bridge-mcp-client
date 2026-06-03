@@ -41,12 +41,27 @@ test("throws on a bad DPOP_KEY_MODE", () => {
   ).toThrow(/DPOP_KEY_MODE/);
 });
 
+test("throws on a non-http(s) OKTA_TOKEN_DPOP_HTU", () => {
+  expect(() =>
+    loadConfig({ ...base, OKTA_TOKEN_DPOP_HTU: "ftp://nope" }),
+  ).toThrow(/OKTA_TOKEN_DPOP_HTU/);
+});
+
+test("accepts a valid OKTA_TOKEN_DPOP_HTU override", () => {
+  const cfg = loadConfig({
+    ...base,
+    OKTA_TOKEN_DPOP_HTU: "https://org.okta.com/oauth2/v1/token",
+  });
+  expect(cfg.OKTA_TOKEN_DPOP_HTU).toBe("https://org.okta.com/oauth2/v1/token");
+});
+
 test("succeeds with a minimal valid env and applies defaults", () => {
   const cfg = loadConfig(base);
   expect(cfg.ADAPTER_BASE_URL).toBe("https://adapter.example.com");
   expect(cfg.OKTA_CLIENT_ID).toBe("client123");
   expect(cfg.AGENT_ID).toBe("agent123");
   expect(cfg.OKTA_ISSUER).toBeUndefined();
+  expect(cfg.OKTA_TOKEN_DPOP_HTU).toBeUndefined();
   expect(cfg.DPOP_ALG).toBe("ES256");
   expect(cfg.DPOP_KEY_MODE).toBe("persistent");
   expect(cfg.OKTA_SCOPES).toBe("openid offline_access");

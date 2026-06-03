@@ -34,6 +34,7 @@ const FLAG_TO_ENV: Record<string, string> = {
   "--client-id": "OKTA_CLIENT_ID",
   "--agent-id": "AGENT_ID",
   "--issuer": "OKTA_ISSUER",
+  "--token-dpop-htu": "OKTA_TOKEN_DPOP_HTU",
   "--redirect-port": "OKTA_REDIRECT_PORT",
   "--scopes": "OKTA_SCOPES",
   "--alg": "DPOP_ALG",
@@ -57,7 +58,8 @@ Commands:
 
 Flags (override the matching env var):
   --adapter-base-url <url>   --client-id <id>      --agent-id <id>
-  --issuer <url>             --redirect-port <n>   --scopes <s>
+  --issuer <url>             --token-dpop-htu <url>
+  --redirect-port <n>        --scopes <s>
   --alg <ES256|ES384|RS256>  --key-mode <persistent|ephemeral>
   --bridge-home <dir>        --timeout <ms>        --log-level <level>
   -v, --version              -h, --help
@@ -236,6 +238,9 @@ async function doctor(config: Config, deps: CliDeps, logger: Logger): Promise<nu
   out(`  client_id:  ${config.OKTA_CLIENT_ID}`);
   out(`  agent_id:   ${config.AGENT_ID}`);
   out(`  issuer:     ${config.OKTA_ISSUER ?? "(adapter discovery)"}`);
+  if (config.OKTA_TOKEN_DPOP_HTU) {
+    out(`  token htu:  ${config.OKTA_TOKEN_DPOP_HTU} (proof override)`);
+  }
   out(`  redirect:   http://127.0.0.1:${config.OKTA_REDIRECT_PORT}/callback`);
   if (config.OKTA_REDIRECT_PORT === 0) {
     out("  WARNING:    OKTA_REDIRECT_PORT=0 (ephemeral) — Okta needs a fixed, pre-registered port; set OKTA_REDIRECT_PORT");

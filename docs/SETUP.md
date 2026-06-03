@@ -63,6 +63,26 @@ path, because the adapter enforces `cnf.jkt` equality and the token must be boun
 real issuer. Without `OKTA_ISSUER`, the bridge relies on the adapter's token endpoint
 forwarding the DPoP proof + nonce to Okta unchanged.
 
+### BFF / proxy adapters: the `/token` proof `htu`
+
+If your adapter is a **BFF that proxies the OAuth `/token` call to Okta** (it injects the
+confidential client's secret, relays the bridge's DPoP proof, and forwards Okta's nonce
+handshake), then Okta — not the adapter — verifies the `/token` DPoP proof. Okta recomputes
+the proof's `htu` from **its own** token endpoint, so a proof whose `htu` is the adapter URL
+(e.g. `http://localhost:8100/oauth2/v1/token`) is rejected.
+
+Set `OKTA_TOKEN_DPOP_HTU` to Okta's real token endpoint so the proof's `htu` matches the
+verifier, while the bridge keeps POSTing to the adapter:
+
+```bash
+export ADAPTER_BASE_URL=http://localhost:8100                 # where the bridge dials
+export OKTA_TOKEN_DPOP_HTU=https://your-org.okta.com/oauth2/v1/token  # what Okta verifies
+```
+
+(Use the matching custom-AS path, e.g. `.../oauth2/<authServerId>/v1/token`, if applicable.)
+This applies only to the `/token` proof — resource-call proofs are verified by the adapter
+itself and use `ADAPTER_BASE_URL`.
+
 ## 2. Adapter agent
 
 On the Okta MCP Adapter, create an **agent** for the bridge:
