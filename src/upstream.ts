@@ -74,6 +74,12 @@ export class UpstreamClient {
       const token = await this.tokenClient.getAccessToken(authorizeFn);
       let resp = await this.send(jsonRpc, { authed: true, token });
 
+      if (resp.httpStatus === 404 && this.mcpSessionId) {
+        this.logger.warn("mcp.session.not_found", { clearing: true });
+        this.mcpSessionId = undefined;
+        resp = await this.send(jsonRpc, { authed: true, token });
+      }
+
       if (resp.httpStatus === 401) {
         if (UpstreamClient.isUseDpopNonce(resp)) {
           const nonce = resp.headers.get("DPoP-Nonce");
@@ -104,7 +110,12 @@ export class UpstreamClient {
   /** Unauthed forward (initialize/ping/notifications); never throws. */
   async forwardUnauthed(jsonRpc: unknown): Promise<unknown> {
     try {
-      const resp = await this.send(jsonRpc, { authed: false });
+      let resp = await this.send(jsonRpc, { authed: false });
+      if (resp.httpStatus === 404 && this.mcpSessionId) {
+        this.logger.warn("mcp.session.not_found", { clearing: true });
+        this.mcpSessionId = undefined;
+        resp = await this.send(jsonRpc, { authed: false });
+      }
       return resp.json;
     } catch (err) {
       this.logger.error("mcp.request.upstream_error", { error: String(err) });
