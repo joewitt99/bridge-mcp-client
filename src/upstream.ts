@@ -46,6 +46,38 @@ function methodOf(jsonRpc: unknown): string {
   return typeof m === "string" ? m : "";
 }
 
+/** Result array keys MCP list methods return, in precedence order. */
+const LIST_RESULT_KEYS = ["tools", "resources", "prompts", "resourceTemplates"] as const;
+
+/**
+ * For MCP list methods (those whose method ends in `/list`), summarize the
+ * pagination shape of a parsed response — whether it carries a usable
+ * `result.nextCursor` and how many items
+ * came back. Returns null for non-list methods. Pure; reads counts only (no
+ * names/secrets) so it is safe to log. Used to localize a page cap to the client
+ * (cursor preserved → not followed) vs. the bridge (cursor dropped).
+ */
+export function pageInfo(
+  method: string,
+  json: unknown,
+): { has_next_cursor: boolean; item_count: number } | null {
+  if (!method.endsWith("/list")) return null;
+  const result = (json as { result?: Record<string, unknown> } | null)?.result;
+  const nextCursor = result?.nextCursor;
+  const has_next_cursor = typeof nextCursor === "string" && nextCursor.length > 0;
+  let item_count = 0;
+  if (result) {
+    for (const key of LIST_RESULT_KEYS) {
+      const arr = result[key];
+      if (Array.isArray(arr)) {
+        item_count = arr.length;
+        break;
+      }
+    }
+  }
+  return { has_next_cursor, item_count };
+}
+
 export class UpstreamClient {
   private mcpSessionId?: string;
   /** Resource-side DPoP nonce (defensive — the adapter usually won't send one). */
@@ -187,7 +219,22 @@ export class UpstreamClient {
       this.logger.info("mcp.session.established", { has_session: true });
     }
 
-    return { httpStatus: res.status, headers: res.headers, json: await parseBody(res) };
+    const json = await parseBody(res);
+
+    // Pagination diagnostic (debug only): reveals whether nextCursor survives
+    // through the bridge for list methods, to localize a 25-of-N page cap.
+    const page = pageInfo(methodOf(jsonRpc), json);
+    if (page) {
+      this.logger.debug("mcp.response.page", {
+        method: methodOf(jsonRpc),
+        http_status: res.status,
+        content_type: res.headers.get("Content-Type") ?? undefined,
+        has_next_cursor: page.has_next_cursor,
+        item_count: page.item_count,
+      });
+    }
+
+    return { httpStatus: res.status, headers: res.headers, json };
   }
 }
 

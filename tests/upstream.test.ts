@@ -6,8 +6,8 @@ import { createHash } from "node:crypto";
 import { decodeJwt } from "jose";
 import type { Config } from "../src/config.ts";
 import { DpopKeyManager, canonicalHtu } from "../src/dpop.ts";
-import { UpstreamClient, type TokenProvider } from "../src/upstream.ts";
-import { logger as baseLogger } from "../src/logger.ts";
+import { UpstreamClient, pageInfo, type TokenProvider } from "../src/upstream.ts";
+import { logger as baseLogger, type Logger } from "../src/logger.ts";
 
 const ADAPTER = "https://adapter.example.com";
 let home: string;
@@ -223,5 +223,99 @@ describe("UpstreamClient 401 recovery", () => {
     };
     expect(res.error?.code).toBe(-32000);
     expect(res.id).toBe(7);
+  });
+});
+
+/** A logger that records emitted records (event + fields) per level. */
+function recordingLogger(): {
+  logger: Logger;
+  records: Array<{ level: string; event: string; fields?: Record<string, unknown> }>;
+} {
+  const records: Array<{ level: string; event: string; fields?: Record<string, unknown> }> = [];
+  const make = (): Logger => ({
+    log: (level, event, fields) => records.push({ level, event, fields }),
+    debug: (event, fields) => records.push({ level: "debug", event, fields }),
+    info: (event, fields) => records.push({ level: "info", event, fields }),
+    warn: (event, fields) => records.push({ level: "warn", event, fields }),
+    error: (event, fields) => records.push({ level: "error", event, fields }),
+    withCorrelation: () => make(),
+  });
+  return { logger: make(), records };
+}
+
+function pageRecord(records: ReturnType<typeof recordingLogger>["records"]) {
+  return records.find((r) => r.event === "mcp.response.page")?.fields;
+}
+
+describe("pageInfo (pagination diagnostic helper)", () => {
+  test("reports nextCursor + item_count for a tools/list result", () => {
+    const info = pageInfo("tools/list", {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "a" }, { name: "b" }], nextCursor: "page2" },
+    });
+    expect(info).toEqual({ has_next_cursor: true, item_count: 2 });
+  });
+
+  test("has_next_cursor false when absent or empty; counts the right array", () => {
+    expect(pageInfo("resources/list", { result: { resources: [1, 2, 3] } })).toEqual({
+      has_next_cursor: false,
+      item_count: 3,
+    });
+    expect(pageInfo("tools/list", { result: { tools: [], nextCursor: "" } })).toEqual({
+      has_next_cursor: false,
+      item_count: 0,
+    });
+  });
+
+  test("returns null for non-list methods", () => {
+    expect(pageInfo("tools/call", { result: { content: [] } })).toBeNull();
+    expect(pageInfo("initialize", { result: {} })).toBeNull();
+  });
+});
+
+describe("UpstreamClient pagination diagnostic log", () => {
+  test("logs mcp.response.page with nextCursor + count for a JSON tools/list", async () => {
+    const { logger, records } = recordingLogger();
+    const { fetch } = mockFetch([
+      () =>
+        jsonResponse({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { tools: [{ name: "a" }, { name: "b" }, { name: "c" }], nextCursor: "next-25" },
+        }),
+    ]);
+    const client = new UpstreamClient(cfg(), await km(), stubTokens("t"), logger, { fetch });
+    await client.forward(REQ, authorizeFn);
+    const page = pageRecord(records);
+    expect(page).toBeDefined();
+    expect(page?.has_next_cursor).toBe(true);
+    expect(page?.item_count).toBe(3);
+    expect(page?.content_type).toContain("application/json");
+  });
+
+  test("preserves nextCursor through an SSE tools/list (guards the last-data-line parse)", async () => {
+    const { logger, records } = recordingLogger();
+    const sse =
+      "event: message\ndata: " +
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "a" }], nextCursor: "sse-next" } }) +
+      "\n\n";
+    const { fetch } = mockFetch([
+      () => new Response(sse, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    ]);
+    const client = new UpstreamClient(cfg(), await km(), stubTokens("t"), logger, { fetch });
+    await client.forward(REQ, authorizeFn);
+    const page = pageRecord(records);
+    expect(page?.has_next_cursor).toBe(true);
+    expect(page?.item_count).toBe(1);
+    expect(page?.content_type).toContain("text/event-stream");
+  });
+
+  test("does not log mcp.response.page for non-list methods", async () => {
+    const { logger, records } = recordingLogger();
+    const { fetch } = mockFetch([() => jsonResponse({ jsonrpc: "2.0", id: 1, result: { content: [] } })]);
+    const client = new UpstreamClient(cfg(), await km(), stubTokens("t"), logger, { fetch });
+    await client.forward({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }, authorizeFn);
+    expect(pageRecord(records)).toBeUndefined();
   });
 });
