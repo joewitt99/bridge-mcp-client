@@ -1,6 +1,7 @@
 package seal
 
 import (
+	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -10,7 +11,8 @@ import (
 	"testing"
 )
 
-// RFC 5869 Appendix A, Test Case 1 (SHA-256).
+// RFC 5869 Appendix A, Test Case 1 (SHA-256) — guards that our stdlib hkdf.Key
+// wiring (hash, salt, info) is correct.
 func TestHKDFVector(t *testing.T) {
 	ikm, _ := hex.DecodeString("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
 	salt, _ := hex.DecodeString("000102030405060708090a0b0c")
@@ -18,8 +20,11 @@ func TestHKDFVector(t *testing.T) {
 	want := "3cb25f25faacd57a90434f64d0362f2a" +
 		"2d2d0a90cf1a5a4c5db02d56ecc4c5bf" +
 		"34007208d5b887185865"
-	got := hex.EncodeToString(hkdf(sha256.New, ikm, salt, info, 42))
-	if got != want {
+	okm, err := hkdf.Key(sha256.New, ikm, salt, string(info), 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(okm); got != want {
 		t.Fatalf("HKDF mismatch:\n got %s\nwant %s", got, want)
 	}
 }

@@ -12,13 +12,12 @@ package seal
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
+	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"hash"
 	"os"
 	"path/filepath"
 )
@@ -69,7 +68,8 @@ func deriveKey(home string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return hkdf(sha256.New, seed, nil, []byte(seedInfo), 32), nil
+	// Stdlib HKDF-SHA256 (Go 1.24+); nil salt = HashLen zero bytes per RFC 5869.
+	return hkdf.Key(sha256.New, seed, nil, seedInfo, 32)
 }
 
 func gcmFor(home string) (cipher.AEAD, error) {
@@ -125,26 +125,4 @@ func OpenJSON(home string, s Sealed, dst any) error {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}
 	return json.Unmarshal(plaintext, dst)
-}
-
-// hkdf implements RFC 5869 HKDF (extract-then-expand). A nil salt is treated as
-// HashLen zero bytes, matching Node's hkdfSync with an empty salt.
-func hkdf(newHash func() hash.Hash, ikm, salt, info []byte, length int) []byte {
-	if salt == nil {
-		salt = make([]byte, newHash().Size())
-	}
-	ext := hmac.New(newHash, salt)
-	ext.Write(ikm)
-	prk := ext.Sum(nil)
-
-	var okm, t []byte
-	for i := 1; len(okm) < length; i++ {
-		exp := hmac.New(newHash, prk)
-		exp.Write(t)
-		exp.Write(info)
-		exp.Write([]byte{byte(i)})
-		t = exp.Sum(nil)
-		okm = append(okm, t...)
-	}
-	return okm[:length]
 }
