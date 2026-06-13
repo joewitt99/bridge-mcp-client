@@ -110,8 +110,8 @@ type CliDeps struct {
 	Opener    oauth.Opener
 	Logger    *logx.Logger
 	Stderr    io.Writer // human output sink (default os.Stderr)
-	Input     io.Reader // serve stdin (default os.Stdin)
-	Output    io.Writer // serve stdout (default os.Stdout)
+	Input     io.Reader // serve stdin (defaults to the process stdin)
+	Output    io.Writer // serve response sink (defaults to the process stdout)
 	RunBridge func(context.Context, bridge.Deps) error
 }
 

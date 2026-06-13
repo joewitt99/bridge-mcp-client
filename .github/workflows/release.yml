@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create releases / upload assets
+  id-token: write # cosign keyless (OIDC)
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 } # Linux x64 + ChromeOS Crostini
+          - { goos: linux, goarch: arm64 } # Linux arm64 + ARM Chromebooks
+          - { goos: windows, goarch: amd64, ext: ".exe" }
+          - { goos: darwin, goarch: amd64 } # Intel macOS
+          - { goos: darwin, goarch: arm64 } # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Build static binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          out="okta-mcp-bridge_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}"
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/joewitt99/bridge-mcp-client/internal/version.Version=${GITHUB_REF_NAME}" \
+            -o "dist/${out}" ./cmd/okta-mcp-bridge
+          ( cd dist && shasum -a 256 "${out}" > "${out}.sha256" )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect binaries + combined checksums
+        run: |
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          ( cd dist && cat *.sha256 > SHA256SUMS && rm -f *.sha256 )
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          "$(go env GOPATH)/bin/cyclonedx-gomod" mod -json -output dist/sbom.json
+      - name: Sign checksums (cosign keyless)
+        uses: sigstore/cosign-installer@v3
+      - run: |
+          cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig dist/SHA256SUMS
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/okta-mcp-bridge_*
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/sbom.json
+
+  # --- OS code signing (gated on org secrets; no-op until configured) ---------
+  # macOS notarization and Windows Authenticode require credentials and the
+  # appropriate runners. Enable once the org provides the secrets:
+  #
+  #   macOS (runs-on: macos-latest):
+  #     codesign --options runtime --timestamp -s "$DEVELOPER_ID" <binary>
+  #     xcrun notarytool submit <zip> --apple-id ... --team-id ... --password ... --wait
+  #     xcrun stapler staple <binary>
+  #     # secrets: APPLE_DEVELOPER_ID, NOTARYTOOL_* (App Store Connect API key)
+  #
+  #   Windows (osslsigncode on Linux, or signtool on windows-latest):
+  #     osslsigncode sign -pkcs12 cert.p12 -pass "$PASS" \
+  #       -t http://timestamp.digicert.com -in app.exe -out app-signed.exe
+  #     # secrets: WINDOWS_CODESIGN_PFX (base64), WINDOWS_CODESIGN_PASSWORD
+  #
+  # Until then, integrity is covered by SHA256SUMS + the cosign signature above,
+  # which the fleet's MDM can verify before deployment.

@@ -1,0 +1,46 @@
+name: CI (Go)
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: go vet
+        run: go vet ./...
+      - name: go test -race
+        run: go test -race ./...
+      - name: stdout discipline guard
+        # The MCP JSON-RPC stream owns stdout; the ONLY sanctioned writer is
+        # bridge.writeResponse (internal/bridge/server.go). Fail the build if a
+        # stray stdout write (os.Stdout / fmt.Print*) appears anywhere else.
+        run: |
+          matches=$(grep -RInE 'os\.Stdout|fmt\.Print[lf(]' --include='*.go' internal cmd \
+            | grep -v '_test\.go' \
+            | grep -v 'internal/bridge/server.go' || true)
+          if [ -n "$matches" ]; then
+            echo "Stray stdout write(s) detected:"; echo "$matches"; exit 1
+          fi
+
+  build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: static build (all targets)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for t in linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -trimpath -ldflags "-s -w" \
+              -o /dev/null ./cmd/okta-mcp-bridge
+            echo "built $t"
+          done
