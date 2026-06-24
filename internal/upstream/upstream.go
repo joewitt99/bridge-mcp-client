@@ -143,6 +143,78 @@ func (c *Client) fail(req []byte, err error) map[string]any {
 	return rpcError(req, -32000, "upstream request failed")
 }
 
+// ProbeOptions controls a single diagnostic request (demo / negative tests).
+type ProbeOptions struct {
+	Token        string // access token; empty = no Authorization header
+	IncludeProof bool   // attach a fresh DPoP proof header
+	IncludeAgent bool   // attach X-MCP-Agent
+}
+
+// ProbeResult is the raw outcome of a single Probe request.
+type ProbeResult struct {
+	Status    int
+	WWWAuth   string
+	DPoPNonce string
+	Body      map[string]any
+}
+
+// Probe sends ONE request to the adapter with caller-controlled auth headers and
+// returns the raw status/headers/body — no retries, no nonce recovery. Used by the
+// `call` demo command to show resource-side DPoP enforcement (token without a
+// proof → 401; token with a proof → 200).
+func (c *Client) Probe(ctx context.Context, req []byte, opts ProbeOptions) (ProbeResult, error) {
+	headers := map[string]string{
+		"Content-Type": "application/json",
+		"Accept":       "application/json, text/event-stream",
+	}
+	if c.mcpSessionID != "" {
+		headers["Mcp-Session-Id"] = c.mcpSessionID
+	}
+	if opts.Token != "" {
+		headers["Authorization"] = "DPoP " + opts.Token
+	}
+	if opts.IncludeAgent {
+		headers["X-MCP-Agent"] = c.cfg.AgentID
+	}
+	if opts.IncludeProof {
+		proof, err := c.km.CreateProof(dpop.ProofOptions{
+			HTM: "POST", HTU: c.base + "/", AccessToken: opts.Token, Nonce: c.upstreamNonce,
+		}, c.logger)
+		if err != nil {
+			return ProbeResult{}, err
+		}
+		headers["DPoP"] = proof
+	}
+
+	c.logger.Info("mcp.request.probe", logx.Fields{
+		"method": methodOf(req), "has_token": opts.Token != "", "has_proof": opts.IncludeProof,
+	})
+
+	ctx2, cancel := context.WithTimeout(ctx, c.cfg.HTTPTimeout)
+	defer cancel()
+	r, err := http.NewRequestWithContext(ctx2, http.MethodPost, c.base+"/", bytes.NewReader(req))
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	for k, v := range headers {
+		r.Header.Set(k, v)
+	}
+	res, err := c.doer.Do(r)
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	defer res.Body.Close()
+	if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
+		c.mcpSessionID = sid
+	}
+	return ProbeResult{
+		Status:    res.StatusCode,
+		WWWAuth:   res.Header.Get("WWW-Authenticate"),
+		DPoPNonce: res.Header.Get("DPoP-Nonce"),
+		Body:      parseBody(res),
+	}, nil
+}
+
 func (c *Client) authHeaders(token string) (map[string]string, error) {
 	proof, err := c.km.CreateProof(dpop.ProofOptions{
 		HTM: "POST", HTU: c.base + "/", AccessToken: token, Nonce: c.upstreamNonce,

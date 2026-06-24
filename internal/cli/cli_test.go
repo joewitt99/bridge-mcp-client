@@ -47,9 +47,77 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestParseArgsDemoFlags(t *testing.T) {
+	p := ParseArgs([]string{"call", "tools/list", "--no-proof", "--params", `{"a":1}`, "--method", "ping"})
+	if p.Command != "call" {
+		t.Fatalf("command = %s", p.Command)
+	}
+	if len(p.Args) != 1 || p.Args[0] != "tools/list" {
+		t.Fatalf("args = %v", p.Args)
+	}
+	if p.Flags["--no-proof"] != "true" {
+		t.Errorf("--no-proof = %q, want true", p.Flags["--no-proof"])
+	}
+	if p.Flags["--params"] != `{"a":1}` {
+		t.Errorf("--params = %q", p.Flags["--params"])
+	}
+	if p.Flags["--method"] != "ping" {
+		t.Errorf("--method = %q", p.Flags["--method"])
+	}
+}
+
 type doerFunc func(*http.Request) (*http.Response, error)
 
 func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+// callDoer resolves discovery and enforces DPoP at the resource: a POST to the
+// adapter without a DPoP proof header gets 401, with a proof gets 200.
+func callDoer() oauth.Doer {
+	json := func(code int, s string, h http.Header) *http.Response {
+		if h == nil {
+			h = http.Header{}
+		}
+		h.Set("Content-Type", "application/json")
+		return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(s)), Header: h}
+	}
+	return doerFunc(func(r *http.Request) (*http.Response, error) {
+		u := r.URL.String()
+		switch {
+		case strings.Contains(u, "oauth-protected-resource"):
+			return json(200, `{"authorization_servers":["https://as.example.com"]}`, nil), nil
+		case strings.Contains(u, "oauth-authorization-server"):
+			return json(200, `{"authorization_endpoint":"https://as.example.com/authorize","token_endpoint":"https://as.example.com/token"}`, nil), nil
+		default: // POST / to the adapter
+			if r.Header.Get("DPoP") == "" {
+				return json(401, `{"error":"missing_dpop_proof"}`, http.Header{"Www-Authenticate": []string{`DPoP error="use_dpop_proof"`}}), nil
+			}
+			return json(200, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, nil), nil
+		}
+	})
+}
+
+func TestTokenNoStored(t *testing.T) {
+	code, out := runCLI(t, []string{"token"}, CliDeps{Env: baseEnv(t.TempDir(), nil)})
+	if code != 1 || !strings.Contains(out, "no stored token") {
+		t.Fatalf("token without login: code=%d out=%s", code, out)
+	}
+}
+
+func TestCallNoProofIs401(t *testing.T) {
+	code, out := runCLI(t, []string{"call", "tools/list", "--no-auth", "--no-proof"},
+		CliDeps{Env: baseEnv(t.TempDir(), nil), Doer: callDoer()})
+	if code != 1 || !strings.Contains(out, "HTTP status: 401") {
+		t.Fatalf("no-proof should be 401: code=%d out=%s", code, out)
+	}
+}
+
+func TestCallWithProofIs200(t *testing.T) {
+	code, out := runCLI(t, []string{"call", "tools/list", "--no-auth"},
+		CliDeps{Env: baseEnv(t.TempDir(), nil), Doer: callDoer()})
+	if code != 0 || !strings.Contains(out, "HTTP status: 200") {
+		t.Fatalf("with-proof should be 200: code=%d out=%s", code, out)
+	}
+}
 
 func reachableDoer() oauth.Doer {
 	body := func(s string) *http.Response {

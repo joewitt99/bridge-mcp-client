@@ -158,17 +158,72 @@ func (c *TokenClient) Refresh(ctx context.Context, set store.TokenSet) (*store.T
 	if set.RefreshToken == "" {
 		return nil, fmt.Errorf("cannot refresh: no refresh_token")
 	}
-	params := url.Values{}
-	params.Set("grant_type", "refresh_token")
-	params.Set("refresh_token", set.RefreshToken)
-	params.Set("client_id", c.cfg.OktaClientID)
-	params.Set("scope", set.Scope)
-	res, err := c.withNonceRetry(ctx, params)
+	res, err := c.withNonceRetry(ctx, c.RefreshParams(set))
 	if err != nil {
 		return nil, err
 	}
 	return c.buildAndPersist(res, "refreshed", &set)
 }
+
+// RefreshParams builds the refresh_token grant params for a token set. Exposed
+// for the nonce-replay demo, which drives individual /token requests by hand.
+func (c *TokenClient) RefreshParams(set store.TokenSet) url.Values {
+	params := url.Values{}
+	params.Set("grant_type", "refresh_token")
+	params.Set("refresh_token", set.RefreshToken)
+	params.Set("client_id", c.cfg.OktaClientID)
+	params.Set("scope", set.Scope)
+	return params
+}
+
+// TokenProbe is the raw result of a single low-level /token request.
+type TokenProbe struct {
+	Status      int
+	Error       string
+	Description string
+	DPoPNonce   string
+	TokenType   string
+	AccessToken string
+}
+
+// ProbeTokenRequest performs exactly ONE /token call with the given (possibly
+// empty) nonce — no auto-retry, no nonce recovery — and returns the raw result.
+// Used by the nonce-replay demo to deliberately reuse a stale nonce.
+func (c *TokenClient) ProbeTokenRequest(ctx context.Context, params url.Values, nonce string) (TokenProbe, error) {
+	res, err := c.tokenRequest(ctx, params, nonce)
+	if err != nil {
+		return TokenProbe{}, err
+	}
+	return TokenProbe{
+		Status:      res.status,
+		Error:       res.body.Error,
+		Description: res.body.ErrorDescription,
+		DPoPNonce:   res.dpopNonce,
+		TokenType:   res.body.TokenType,
+		AccessToken: res.body.AccessToken,
+	}, nil
+}
+
+// DecodeClaims decodes (WITHOUT verifying) a JWT access token's claims. Returns
+// (nil, false) for an opaque (non-JWT) token.
+func DecodeClaims(token string) (map[string]any, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, false
+	}
+	return m, true
+}
+
+// CnfJKT returns the cnf.jkt thumbprint embedded in a JWT access token.
+func CnfJKT(token string) (string, bool) { return decodeCnfJKT(token) }
 
 // GetAccessToken returns a valid token: stored-if-valid, else refresh, else the
 // full login (authFn + ExchangeCode).
