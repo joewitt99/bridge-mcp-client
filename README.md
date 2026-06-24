@@ -1,7 +1,7 @@
 # okta-mcp-bridge
 
-A lightweight Bun/TypeScript program that Claude Code (or Cursor, etc.) launches as a
-local **stdio MCP server**. It authenticates **once** against Okta with DPoP, then
+A lightweight, single-binary **Go** program that Claude Code (or Cursor, etc.) launches as
+a local **stdio MCP server**. It authenticates **once** against Okta with DPoP, then
 proxies every MCP call to a remote **Okta MCP Adapter** over HTTPS, attaching a fresh
 DPoP proof per request — "login once, call many". It is, in effect, a DPoP- and
 Okta-aware `mcp-remote`: bridging a stdio transport (client side) to the adapter's
@@ -19,20 +19,55 @@ Claude Code ──stdio (MCP JSON-RPC)──▶ okta-mcp-bridge ──HTTPS + DP
 This repo has **zero code coupling** to the adapter: it imports no adapter code and reads
 none of its source at runtime. Everything it needs to know about the adapter is the DPoP
 proof contract, captured in the spec and enforced by the end-to-end test
-(`tests/integration.test.ts`), which drives the bridge against a mock adapter that
-re-implements that contract.
+(`internal/integration/integration_test.go`), which drives the bridge against a mock
+adapter (`internal/mockadapter`) that re-implements that contract.
 
 ## Install
 
-Requires **Bun ≥ 1.1**.
+Requires **Go ≥ 1.24** (CI builds and tests on 1.26).
+
+Build a single static binary:
 
 ```bash
-bun install
-bun run build      # produces a single binary at dist/okta-mcp-bridge
+go build -o okta-mcp-bridge ./cmd/okta-mcp-bridge
 ```
 
-You can run from source (`bun run src/index.ts ...`) or use the compiled
-`dist/okta-mcp-bridge`.
+Or install it onto your `PATH` (lands in `$(go env GOPATH)/bin`):
+
+```bash
+go install github.com/joewitt99/bridge-mcp-client/cmd/okta-mcp-bridge@latest
+```
+
+During development you can also run straight from source:
+
+```bash
+go run ./cmd/okta-mcp-bridge doctor
+```
+
+### Build & test
+
+```bash
+go build ./...                 # compile everything
+go test ./...                  # run all tests against the mock adapter
+go test -race ./...            # what CI runs
+go vet ./...                   # static checks
+
+# build a stamped, stripped release binary for the current platform
+go build -trimpath -ldflags "-s -w \
+  -X github.com/joewitt99/bridge-mcp-client/internal/version.Version=$(git describe --tags --always)" \
+  -o okta-mcp-bridge ./cmd/okta-mcp-bridge
+```
+
+Cross-compiling is just `GOOS`/`GOARCH` (CGO is not used):
+
+```bash
+GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o okta-mcp-bridge        ./cmd/okta-mcp-bridge
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o okta-mcp-bridge.exe    ./cmd/okta-mcp-bridge
+GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o okta-mcp-bridge        ./cmd/okta-mcp-bridge
+```
+
+Tagged releases (`v*`) build all targets and publish signed checksums + an SBOM via the
+release workflow.
 
 ## Configuration
 
@@ -85,10 +120,11 @@ Then register it in Claude Code as a stdio MCP server — see `docs/CLAUDE_CODE.
 ## stdout is sacred
 
 stdout carries the MCP JSON-RPC stream. The **only** stdout writes in the entire program
-are the JSON-RPC response lines in `src/server.ts`. All logging, diagnostics, and errors
-go to **stderr** as one JSON line per event (`ts`/`level`/`event`/`correlation_id`).
-Secrets are never logged — only thumbprints (`jkt`) and lengths. A single stray
-`console.log` to stdout would corrupt the protocol.
+are the JSON-RPC response lines in `internal/bridge/server.go`. All logging, diagnostics,
+and errors go to **stderr** as one JSON line per event
+(`ts`/`level`/`event`/`correlation_id`). Secrets are never logged — only thumbprints
+(`jkt`) and lengths. A single stray `fmt.Println`/`os.Stdout` write would corrupt the
+protocol, so CI fails the build if any stdout write appears outside that one file.
 
 ## Troubleshooting
 
