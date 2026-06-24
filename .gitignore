@@ -4,3 +4,6 @@ dist
 .env
 .okta-mcp-bridge/
 .DS_Store
+
+# Strategy/analysis docs kept locally, not tracked
+*.docx
