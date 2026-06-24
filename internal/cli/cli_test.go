@@ -3,12 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joewitt99/bridge-mcp-client/internal/config"
 	"github.com/joewitt99/bridge-mcp-client/internal/dpop"
@@ -106,7 +109,7 @@ func TestTokenNoStored(t *testing.T) {
 func TestCallNoProofIs401(t *testing.T) {
 	code, out := runCLI(t, []string{"call", "tools/list", "--no-auth", "--no-proof"},
 		CliDeps{Env: baseEnv(t.TempDir(), nil), Doer: callDoer()})
-	if code != 1 || !strings.Contains(out, "HTTP status: 401") {
+	if code != 1 || !strings.Contains(out, "HTTP 401") {
 		t.Fatalf("no-proof should be 401: code=%d out=%s", code, out)
 	}
 }
@@ -114,8 +117,99 @@ func TestCallNoProofIs401(t *testing.T) {
 func TestCallWithProofIs200(t *testing.T) {
 	code, out := runCLI(t, []string{"call", "tools/list", "--no-auth"},
 		CliDeps{Env: baseEnv(t.TempDir(), nil), Doer: callDoer()})
-	if code != 0 || !strings.Contains(out, "HTTP status: 200") {
+	if code != 0 || !strings.Contains(out, "HTTP 200") {
 		t.Fatalf("with-proof should be 200: code=%d out=%s", code, out)
+	}
+	// the wire dump should decode and show the DPoP proof
+	if !strings.Contains(out, "DPoP proof (decoded)") || !strings.Contains(out, "htm=POST") {
+		t.Errorf("expected decoded DPoP proof in wire output: %s", out)
+	}
+}
+
+func proofNonce(proof string) string {
+	parts := strings.Split(proof, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	b, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return ""
+	}
+	n, _ := m["nonce"].(string)
+	return n
+}
+
+// replayDoer models an AS that requires a nonce and enforces single-use jti:
+// a no-nonce proof gets use_dpop_nonce; a nonce'd proof succeeds once; the same
+// proof replayed gets invalid_dpop_proof.
+func replayDoer() oauth.Doer {
+	seen := map[string]bool{}
+	resp := func(code int, s string, h http.Header) *http.Response {
+		if h == nil {
+			h = http.Header{}
+		}
+		h.Set("Content-Type", "application/json")
+		return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(s)), Header: h}
+	}
+	return doerFunc(func(r *http.Request) (*http.Response, error) {
+		u := r.URL.String()
+		switch {
+		case strings.Contains(u, "oauth-protected-resource"):
+			return resp(200, `{"authorization_servers":["https://as.example.com"]}`, nil), nil
+		case strings.Contains(u, "oauth-authorization-server"):
+			return resp(200, `{"authorization_endpoint":"https://as.example.com/authorize","token_endpoint":"https://as.example.com/token"}`, nil), nil
+		default: // token endpoint
+			proof := r.Header.Get("DPoP")
+			if proofNonce(proof) == "" {
+				return resp(400, `{"error":"use_dpop_nonce"}`, http.Header{"Dpop-Nonce": []string{"n1"}}), nil
+			}
+			if seen[proof] {
+				return resp(400, `{"error":"invalid_dpop_proof","error_description":"jti replay"}`, nil), nil
+			}
+			seen[proof] = true
+			return resp(200, `{"access_token":"AAAAAAAA_MIDDLE_SECRET_BBBB","refresh_token":"rt2","token_type":"DPoP","expires_in":3600,"scope":"openid offline_access"}`, nil), nil
+		}
+	})
+}
+
+func TestNonceReplayProofRejected(t *testing.T) {
+	home := t.TempDir()
+	if err := store.New(home).Save(store.TokenSet{
+		AccessToken: "at", RefreshToken: "rt1", TokenType: "DPoP",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), Scope: "openid offline_access",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, out := runCLI(t, []string{"nonce-replay", "--replay-proof"},
+		CliDeps{Env: baseEnv(home, nil), Doer: replayDoer()})
+	if code != 0 || !strings.Contains(out, "PASS") {
+		t.Fatalf("expected PASS, code=%d out=%s", code, out)
+	}
+	if !strings.Contains(out, "invalid_dpop_proof") {
+		t.Errorf("expected invalid_dpop_proof in output: %s", out)
+	}
+	// the access_token in the /token response body must be redacted by default
+	if strings.Contains(out, "MIDDLE_SECRET") {
+		t.Errorf("access_token leaked in wire output: %s", out)
+	}
+}
+
+func TestNonceReplayShowSecrets(t *testing.T) {
+	home := t.TempDir()
+	if err := store.New(home).Save(store.TokenSet{
+		AccessToken: "at", RefreshToken: "rt1", TokenType: "DPoP",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), Scope: "openid offline_access",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, out := runCLI(t, []string{"nonce-replay", "--replay-proof", "--show-secrets"},
+		CliDeps{Env: baseEnv(home, nil), Doer: replayDoer()})
+	if !strings.Contains(out, "MIDDLE_SECRET") {
+		t.Errorf("--show-secrets should print the raw access_token: %s", out)
 	}
 }
 

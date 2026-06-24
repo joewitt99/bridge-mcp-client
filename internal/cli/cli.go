@@ -5,13 +5,16 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,7 +72,11 @@ Commands:
   token         Show the stored token's binding (token_type, jwt/opaque, cnf.jkt). [--raw]
   call          Send one MCP call to the adapter with controllable DPoP headers.
                 <method> [--params <json>] [--no-proof] [--no-auth] [--no-init]
-  nonce-replay  Demonstrate AS nonce-replay rejection (needs a prior login).
+  nonce-replay  Demonstrate AS replay rejection (needs a prior login).
+                [--replay-proof] replay a byte-identical proof (same jti) — deterministic.
+
+  call/nonce-replay print the full request/response wire (headers + decoded DPoP
+  proof). Credentials are redacted; add --show-secrets to print them in full.
 
 Flags (override the matching env var):
   --adapter-base-url <url>   --client-id <id>      --agent-id <id>
@@ -202,7 +209,7 @@ func Run(ctx context.Context, args []string, deps CliDeps) int {
 	case "call":
 		return callCmd(ctx, cfg, deps, logger, doer, stderr, parsed)
 	case "nonce-replay":
-		return nonceReplayCmd(ctx, cfg, deps, logger, doer, stderr)
+		return nonceReplayCmd(ctx, cfg, deps, logger, doer, stderr, parsed)
 	}
 	return 0
 }
@@ -465,28 +472,19 @@ func callCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger *logx.
 	}
 
 	out("okta-mcp-bridge call %s  (token=%v proof=%v)", method, includeAuth, includeProof)
-	out("  HTTP status: %d", res.Status)
-	if res.WWWAuth != "" {
-		out("  WWW-Authenticate: %s", res.WWWAuth)
-	}
-	if res.DPoPNonce != "" {
-		out("  DPoP-Nonce: %s", res.DPoPNonce)
-	}
-	if res.Body != nil {
-		pretty, _ := json.MarshalIndent(res.Body, "  ", "  ")
-		out("  body: %s", string(pretty))
-	}
+	printWire(res.Wire, out, parsed.Flags["--show-secrets"] == "true")
 	if res.Status == 401 {
 		return 1
 	}
 	return 0
 }
 
-// nonceReplayCmd demonstrates AS nonce-replay rejection using the refresh grant.
-// It (1) gets a fresh nonce, (2) spends it on a successful token request, then
-// (3) deliberately reuses the SAME nonce on a second request and shows the AS
-// rejects it with use_dpop_nonce + a new nonce. Requires a prior `login`. DEMO 4.
-func nonceReplayCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger *logx.Logger, doer oauth.Doer, stderr io.Writer) int {
+// nonceReplayCmd demonstrates AS replay rejection using the refresh grant.
+// Default (nonce reuse): (1) get a fresh nonce, (2) spend it on a successful
+// token request, then (3) reuse the SAME nonce on a second request. With
+// --replay-proof it instead sends a byte-identical proof (same jti) twice, which
+// the AS must reject deterministically regardless of nonce lifetime. DEMO 4.
+func nonceReplayCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger *logx.Logger, doer oauth.Doer, stderr io.Writer, parsed Parsed) int {
 	out := func(format string, a ...any) { fmt.Fprintf(stderr, format+"\n", a...) }
 
 	km, err := dpop.NewKeyManager(cfg, logger)
@@ -511,6 +509,11 @@ func nonceReplayCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger
 	}
 	tc := oauth.NewTokenClient(cfg, endpoints, km, st, logger, doer)
 
+	if parsed.Flags["--replay-proof"] == "true" {
+		return proofReplay(ctx, tc, *set, out, parsed.Flags["--show-secrets"] == "true")
+	}
+	showSecrets := parsed.Flags["--show-secrets"] == "true"
+
 	out("okta-mcp-bridge nonce-replay")
 
 	// Step 1: prime — a no-nonce request elicits the AS nonce challenge.
@@ -521,8 +524,15 @@ func nonceReplayCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger
 	}
 	nonce := p1.DPoPNonce
 	out("  step 1: no-nonce request → HTTP %d error=%q DPoP-Nonce=%q", p1.Status, p1.Error, nonce)
+	printWire(p1.Wire, out, showSecrets)
 	if nonce == "" {
-		out("  the AS did not return a DPoP-Nonce; cannot run the replay test")
+		if p1.Error == "invalid_dpop_proof" {
+			out("  the AS rejected the proof (invalid_dpop_proof) before issuing a nonce —")
+			out("  the proof htu likely doesn't match Okta's token endpoint. Re-run with the")
+			out("  same env you used for `login`, especially OKTA_TOKEN_DPOP_HTU.")
+		} else {
+			out("  the AS did not return a DPoP-Nonce; cannot run the replay test")
+		}
 		return 1
 	}
 
@@ -533,6 +543,7 @@ func nonceReplayCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger
 		return 1
 	}
 	out("  step 2: nonce used   → HTTP %d token_type=%q access_token=%s", p2.Status, p2.TokenType, present(p2.AccessToken))
+	printWire(p2.Wire, out, showSecrets)
 	if p2.Status < 200 || p2.Status >= 300 {
 		out("  expected a 2xx after supplying the nonce; got error=%q (%s)", p2.Error, p2.Description)
 		return 1
@@ -545,6 +556,7 @@ func nonceReplayCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger
 		return 1
 	}
 	out("  step 3: SAME nonce   → HTTP %d error=%q new DPoP-Nonce=%q", p3.Status, p3.Error, p3.DPoPNonce)
+	printWire(p3.Wire, out, showSecrets)
 
 	if p3.Error == "use_dpop_nonce" || (p3.Status >= 400 && p3.DPoPNonce != "" && p3.DPoPNonce != nonce) {
 		out("  RESULT: PASS — AS rejected the replayed nonce and issued a new one")
@@ -554,11 +566,231 @@ func nonceReplayCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger
 	return 1
 }
 
+// proofReplay sends a byte-identical DPoP proof (same jti) to the /token endpoint
+// twice and shows the AS reject the duplicate. It uses the rotated refresh_token
+// on the replay so the failure can only be the reused jti, not a spent grant.
+func proofReplay(ctx context.Context, tc *oauth.TokenClient, set store.TokenSet, out func(string, ...any), showSecrets bool) int {
+	out("okta-mcp-bridge nonce-replay --replay-proof")
+
+	// Step 1: get a fresh nonce.
+	p1, err := tc.ProbeTokenRequest(ctx, tc.RefreshParams(set), "")
+	if err != nil {
+		out("  step 1 (get nonce): request error: %s", err.Error())
+		return 1
+	}
+	nonce := p1.DPoPNonce
+	out("  step 1: no-nonce request → HTTP %d error=%q DPoP-Nonce=%q", p1.Status, p1.Error, nonce)
+	printWire(p1.Wire, out, showSecrets)
+	if nonce == "" {
+		if p1.Error == "invalid_dpop_proof" {
+			out("  the AS rejected the proof before issuing a nonce — re-run with the same env")
+			out("  you used for `login`, especially OKTA_TOKEN_DPOP_HTU.")
+		} else {
+			out("  the AS did not return a DPoP-Nonce; cannot run the replay test")
+		}
+		return 1
+	}
+
+	// Build ONE proof bound to that nonce — this exact string is replayed.
+	proof, err := tc.NewTokenProof(nonce)
+	if err != nil {
+		out("  could not build proof: %s", err.Error())
+		return 1
+	}
+
+	// Step 2: first use of the proof → expect 200.
+	p2, err := tc.ProbeTokenRequestWithProof(ctx, tc.RefreshParams(set), proof)
+	if err != nil {
+		out("  step 2 (first use): request error: %s", err.Error())
+		return 1
+	}
+	out("  step 2: proof used   → HTTP %d token_type=%q access_token=%s", p2.Status, p2.TokenType, present(p2.AccessToken))
+	printWire(p2.Wire, out, showSecrets)
+	if p2.Status < 200 || p2.Status >= 300 {
+		out("  expected a 2xx on first use; got error=%q (%s)", p2.Error, p2.Description)
+		return 1
+	}
+
+	// Use the rotated refresh_token (if any) so step 3 fails only on the reused jti.
+	replaySet := set
+	if p2.RefreshToken != "" {
+		replaySet.RefreshToken = p2.RefreshToken
+	}
+
+	// Step 3: replay the byte-identical proof → expect rejection (duplicate jti).
+	p3, err := tc.ProbeTokenRequestWithProof(ctx, tc.RefreshParams(replaySet), proof)
+	if err != nil {
+		out("  step 3 (replay): request error: %s", err.Error())
+		return 1
+	}
+	out("  step 3: SAME proof   → HTTP %d error=%q description=%q new DPoP-Nonce=%q", p3.Status, p3.Error, p3.Description, p3.DPoPNonce)
+	printWire(p3.Wire, out, showSecrets)
+
+	switch {
+	case p3.Error == "invalid_dpop_proof":
+		out("  RESULT: PASS — AS rejected the replayed proof (duplicate jti)")
+		return 0
+	case p3.Status >= 400:
+		out("  RESULT: PASS — AS rejected the replayed proof (HTTP %d, error=%q)", p3.Status, p3.Error)
+		return 0
+	default:
+		out("  RESULT: replayed proof was NOT rejected (HTTP %d) — unexpected; the AS may not enforce single-use jti", p3.Status)
+		return 1
+	}
+}
+
 func present(s string) string {
 	if s == "" {
 		return "(none)"
 	}
 	return fmt.Sprintf("present (len=%d)", len(s))
+}
+
+// secretHeaders carry credentials; their values are redacted unless --show-secrets.
+var secretHeaders = map[string]bool{"Authorization": true}
+
+// printWire renders a captured request/response pair (headers + body) and decodes
+// the DPoP proof into its header/claims — the educational core of the demos.
+func printWire(w oauth.Wire, out func(string, ...any), showSecrets bool) {
+	if w.Method != "" {
+		out("    → %s %s", w.Method, w.URL)
+		printHeaders(w.ReqHeaders, out, showSecrets)
+		if proof := w.ReqHeaders.Get("DPoP"); proof != "" {
+			printProof(proof, out)
+		}
+		if w.ReqBody != "" {
+			body := w.ReqBody
+			if strings.Contains(w.ReqHeaders.Get("Content-Type"), "x-www-form-urlencoded") {
+				body = redactForm(w.ReqBody, showSecrets) // /token bodies carry code/refresh_token
+			}
+			out("        body: %s", body)
+		}
+	}
+	out("    ← HTTP %d", w.Status)
+	printHeaders(w.RespHeaders, out, showSecrets)
+	if w.RespBody != "" {
+		out("        body: %s", redactJSONBody(strings.TrimSpace(w.RespBody), showSecrets))
+	}
+}
+
+// secretBodyKeys are JSON fields whose values are credentials.
+var secretBodyKeys = map[string]bool{
+	"access_token": true, "refresh_token": true, "id_token": true, "token": true,
+}
+
+// redactJSONBody redacts credential fields in a JSON object body (e.g. a /token
+// response). Non-object bodies (MCP results) are returned unchanged.
+func redactJSONBody(body string, showSecrets bool) string {
+	if showSecrets {
+		return body
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(body), &m) != nil {
+		return body
+	}
+	changed := false
+	for k := range m {
+		if secretBodyKeys[k] {
+			if s, ok := m[k].(string); ok {
+				m[k] = redactToken(s)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return string(b)
+}
+
+func printHeaders(h http.Header, out func(string, ...any), showSecrets bool) {
+	keys := make([]string, 0, len(h))
+	for k := range h {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		val := strings.Join(h[k], ", ")
+		if !showSecrets && secretHeaders[k] {
+			val = redactAuth(val)
+		}
+		out("        %s: %s", k, val)
+	}
+}
+
+// printProof decodes (without verifying) a DPoP proof's header and claims.
+func printProof(proof string, out func(string, ...any)) {
+	parts := strings.Split(proof, ".")
+	if len(parts) < 2 {
+		return
+	}
+	hdr := decodeJWTSegment(parts[0])
+	pl := decodeJWTSegment(parts[1])
+	out("        ↳ DPoP proof (decoded):")
+	if hdr != nil {
+		out("            header: typ=%v alg=%v", hdr["typ"], hdr["alg"])
+		if jwk, ok := hdr["jwk"].(map[string]any); ok {
+			out("            jwk:    kty=%v crv=%v (public key embedded)", jwk["kty"], jwk["crv"])
+		}
+	}
+	if pl != nil {
+		out("            claims: htm=%v htu=%v", pl["htm"], pl["htu"])
+		out("                    iat=%v jti=%v", pl["iat"], pl["jti"])
+		if n, ok := pl["nonce"]; ok {
+			out("                    nonce=%v", n)
+		}
+		if a, ok := pl["ath"]; ok {
+			out("                    ath=%v (access-token hash)", a)
+		}
+	}
+}
+
+func decodeJWTSegment(seg string) map[string]any {
+	b, err := base64.RawURLEncoding.DecodeString(seg)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// redactAuth redacts a credential while preserving the auth scheme (e.g. "DPoP ").
+func redactAuth(v string) string {
+	if i := strings.IndexByte(v, ' '); i > 0 && i <= 8 {
+		return v[:i+1] + redactToken(v[i+1:])
+	}
+	return redactToken(v)
+}
+
+func redactToken(t string) string {
+	if len(t) <= 14 {
+		return "<redacted>"
+	}
+	return fmt.Sprintf("%s…%s <len=%d>", t[:8], t[len(t)-4:], len(t))
+}
+
+// redactForm redacts the sensitive fields of a form-encoded /token request body.
+func redactForm(body string, showSecrets bool) string {
+	if showSecrets {
+		return body
+	}
+	vals, err := url.ParseQuery(body)
+	if err != nil {
+		return body
+	}
+	for _, k := range []string{"code", "refresh_token", "code_verifier", "client_secret"} {
+		if vals.Get(k) != "" {
+			vals.Set(k, "<redacted>")
+		}
+	}
+	return vals.Encode()
 }
 
 func orDefault(v, def string) string {

@@ -156,6 +156,7 @@ type ProbeResult struct {
 	WWWAuth   string
 	DPoPNonce string
 	Body      map[string]any
+	Wire      oauth.Wire
 }
 
 // Probe sends ONE request to the adapter with caller-controlled auth headers and
@@ -207,11 +208,17 @@ func (c *Client) Probe(ctx context.Context, req []byte, opts ProbeOptions) (Prob
 	if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
 		c.mcpSessionID = sid
 	}
+	raw, _ := io.ReadAll(res.Body)
 	return ProbeResult{
 		Status:    res.StatusCode,
 		WWWAuth:   res.Header.Get("WWW-Authenticate"),
 		DPoPNonce: res.Header.Get("DPoP-Nonce"),
-		Body:      parseBody(res),
+		Body:      parseBodyBytes(raw, res.Header.Get("Content-Type")),
+		Wire: oauth.Wire{
+			Method: http.MethodPost, URL: c.base + "/",
+			ReqHeaders: r.Header.Clone(), ReqBody: string(req),
+			Status: res.StatusCode, RespHeaders: res.Header, RespBody: string(raw),
+		},
 	}, nil
 }
 
@@ -297,10 +304,16 @@ func isUseDpopNonce(r sendResult) bool {
 // parseBody decodes the response: the LAST `data:` line for SSE, else JSON.
 func parseBody(res *http.Response) map[string]any {
 	raw, _ := io.ReadAll(res.Body)
+	return parseBodyBytes(raw, res.Header.Get("Content-Type"))
+}
+
+// parseBodyBytes decodes already-read body bytes (so callers that also need the
+// raw bytes, e.g. the wire dump, don't consume the stream twice).
+func parseBodyBytes(raw []byte, contentType string) map[string]any {
 	if len(raw) == 0 {
 		return nil
 	}
-	if strings.Contains(res.Header.Get("Content-Type"), "text/event-stream") {
+	if strings.Contains(contentType, "text/event-stream") {
 		var last string
 		for _, line := range strings.Split(string(raw), "\n") {
 			line = strings.TrimRight(line, "\r")

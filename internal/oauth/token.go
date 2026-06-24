@@ -63,6 +63,18 @@ type tokenHTTPResult struct {
 	raw       string
 	dpopNonce string
 	wwwAuth   string
+	wire      Wire
+}
+
+// Wire is a captured request/response pair for the demo commands' --wire output.
+type Wire struct {
+	Method      string
+	URL         string
+	ReqHeaders  http.Header
+	ReqBody     string
+	Status      int
+	RespHeaders http.Header
+	RespBody    string
 }
 
 // ClearStored drops the persisted token, forcing the next GetAccessToken to
@@ -70,10 +82,22 @@ type tokenHTTPResult struct {
 func (c *TokenClient) ClearStored() error { return c.store.Clear() }
 
 func (c *TokenClient) tokenRequest(ctx context.Context, params url.Values, nonce string) (tokenHTTPResult, error) {
-	proof, err := c.km.CreateProof(dpop.ProofOptions{HTM: "POST", HTU: c.tokenHTU, Nonce: nonce}, c.logger)
+	proof, err := c.NewTokenProof(nonce)
 	if err != nil {
 		return tokenHTTPResult{}, err
 	}
+	return c.sendTokenProof(ctx, params, proof)
+}
+
+// NewTokenProof builds a single /token DPoP proof (HTM POST, the configured htu,
+// optional nonce). Exposed so the proof-replay demo can send the SAME proof twice.
+func (c *TokenClient) NewTokenProof(nonce string) (string, error) {
+	return c.km.CreateProof(dpop.ProofOptions{HTM: "POST", HTU: c.tokenHTU, Nonce: nonce}, c.logger)
+}
+
+// sendTokenProof POSTs the form params to the token endpoint with the EXACT proof
+// supplied, and returns the raw result.
+func (c *TokenClient) sendTokenProof(ctx context.Context, params url.Values, proof string) (tokenHTTPResult, error) {
 	// Safe to log: grant_type and client_id are public; code/verifier are not.
 	c.logger.Debug("oauth.token.request", logx.Fields{
 		"token_endpoint":    c.ep.TokenEndpoint,
@@ -83,7 +107,6 @@ func (c *TokenClient) tokenRequest(ctx context.Context, params url.Values, nonce
 		"has_code":          params.Get("code") != "",
 		"has_code_verifier": params.Get("code_verifier") != "",
 		"has_refresh_token": params.Get("refresh_token") != "",
-		"has_nonce":         nonce != "",
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ep.TokenEndpoint, strings.NewReader(params.Encode()))
 	if err != nil {
@@ -107,6 +130,11 @@ func (c *TokenClient) tokenRequest(ctx context.Context, params url.Values, nonce
 		raw:       string(raw),
 		dpopNonce: res.Header.Get("DPoP-Nonce"),
 		wwwAuth:   res.Header.Get("WWW-Authenticate"),
+		wire: Wire{
+			Method: http.MethodPost, URL: c.ep.TokenEndpoint,
+			ReqHeaders: req.Header.Clone(), ReqBody: params.Encode(),
+			Status: res.StatusCode, RespHeaders: res.Header, RespBody: string(raw),
+		},
 	}, nil
 }
 
@@ -178,12 +206,27 @@ func (c *TokenClient) RefreshParams(set store.TokenSet) url.Values {
 
 // TokenProbe is the raw result of a single low-level /token request.
 type TokenProbe struct {
-	Status      int
-	Error       string
-	Description string
-	DPoPNonce   string
-	TokenType   string
-	AccessToken string
+	Status       int
+	Error        string
+	Description  string
+	DPoPNonce    string
+	TokenType    string
+	AccessToken  string
+	RefreshToken string
+	Wire         Wire
+}
+
+func toProbe(res tokenHTTPResult) TokenProbe {
+	return TokenProbe{
+		Status:       res.status,
+		Error:        res.body.Error,
+		Description:  res.body.ErrorDescription,
+		DPoPNonce:    res.dpopNonce,
+		TokenType:    res.body.TokenType,
+		AccessToken:  res.body.AccessToken,
+		RefreshToken: res.body.RefreshToken,
+		Wire:         res.wire,
+	}
 }
 
 // ProbeTokenRequest performs exactly ONE /token call with the given (possibly
@@ -194,14 +237,18 @@ func (c *TokenClient) ProbeTokenRequest(ctx context.Context, params url.Values, 
 	if err != nil {
 		return TokenProbe{}, err
 	}
-	return TokenProbe{
-		Status:      res.status,
-		Error:       res.body.Error,
-		Description: res.body.ErrorDescription,
-		DPoPNonce:   res.dpopNonce,
-		TokenType:   res.body.TokenType,
-		AccessToken: res.body.AccessToken,
-	}, nil
+	return toProbe(res), nil
+}
+
+// ProbeTokenRequestWithProof performs exactly ONE /token call using the EXACT
+// proof supplied (no fresh proof generated). Used by the proof-replay demo to
+// send a byte-identical proof twice and show the AS reject the duplicate jti.
+func (c *TokenClient) ProbeTokenRequestWithProof(ctx context.Context, params url.Values, proof string) (TokenProbe, error) {
+	res, err := c.sendTokenProof(ctx, params, proof)
+	if err != nil {
+		return TokenProbe{}, err
+	}
+	return toProbe(res), nil
 }
 
 // DecodeClaims decodes (WITHOUT verifying) a JWT access token's claims. Returns
