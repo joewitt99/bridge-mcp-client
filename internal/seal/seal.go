@@ -120,6 +120,11 @@ func OpenJSON(home string, s Sealed, dst any) error {
 	if err != nil {
 		return err
 	}
+	// Guard before gcm.Open: a wrong-length nonce makes AES-GCM panic rather than
+	// return an error. A zero/short nonce means the sealed blob is empty or corrupt.
+	if len(nonce) != gcm.NonceSize() {
+		return fmt.Errorf("sealed blob corrupt: nonce is %d bytes, want %d", len(nonce), gcm.NonceSize())
+	}
 	plaintext, err := gcm.Open(nil, nonce, ct, nil)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)

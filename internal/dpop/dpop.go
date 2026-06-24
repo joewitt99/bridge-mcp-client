@@ -59,24 +59,16 @@ func NewKeyManager(cfg config.Config, logger *logx.Logger) (*KeyManager, error) 
 		b, err := os.ReadFile(path)
 		switch {
 		case err == nil:
-			var kf keyFile
-			if err := json.Unmarshal(b, &kf); err != nil {
-				return nil, fmt.Errorf("dpop-key.json: %w", err)
+			if km, lerr := loadPersistedKey(cfg, b); lerr == nil {
+				logger.Info("dpop.key.loaded", logx.Fields{"jkt": km.jkt})
+				return km, nil
+			} else {
+				// Corrupt/unreadable key file (e.g. copied from another machine,
+				// truncated, or sealed with a different .seed). Self-heal by
+				// regenerating rather than crashing — any stored token bound to the
+				// old key is unusable anyway, so a fresh login is required next.
+				logger.Warn("dpop.key.regenerating", logx.Fields{"reason": lerr.Error()})
 			}
-			var pjwk privateJWK
-			if err := seal.OpenJSON(cfg.BridgeHome, kf.Sealed, &pjwk); err != nil {
-				return nil, err
-			}
-			priv, err := pjwk.toKey()
-			if err != nil {
-				return nil, err
-			}
-			km, err := newFromKey(cfg.DpopAlg, priv)
-			if err != nil {
-				return nil, err
-			}
-			logger.Info("dpop.key.loaded", logx.Fields{"jkt": km.jkt})
-			return km, nil
 		case os.IsNotExist(err):
 			// fall through to generate + persist
 		default:
@@ -120,6 +112,25 @@ func NewKeyManager(cfg config.Config, logger *logx.Logger) (*KeyManager, error) 
 	}
 	logger.Info("dpop.key.generated", logx.Fields{"jkt": km.jkt, "ephemeral": true})
 	return km, nil
+}
+
+// loadPersistedKey decodes and unseals dpop-key.json. Any failure (bad JSON,
+// empty/corrupt sealed blob, wrong seed, invalid key) is returned as an error so
+// the caller can regenerate instead of crashing.
+func loadPersistedKey(cfg config.Config, b []byte) (*KeyManager, error) {
+	var kf keyFile
+	if err := json.Unmarshal(b, &kf); err != nil {
+		return nil, fmt.Errorf("dpop-key.json: %w", err)
+	}
+	var pjwk privateJWK
+	if err := seal.OpenJSON(cfg.BridgeHome, kf.Sealed, &pjwk); err != nil {
+		return nil, err
+	}
+	priv, err := pjwk.toKey()
+	if err != nil {
+		return nil, err
+	}
+	return newFromKey(cfg.DpopAlg, priv)
 }
 
 func newFromKey(alg string, priv *ecdsa.PrivateKey) (*KeyManager, error) {

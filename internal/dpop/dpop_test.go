@@ -202,6 +202,31 @@ func TestPersistentSameJKT(t *testing.T) {
 	}
 }
 
+func TestCorruptKeyFileSelfHeals(t *testing.T) {
+	home := t.TempDir()
+	cfg := testCfg(home, "persistent")
+	// An empty/zero sealed blob is the crash repro: empty nonce panicked AES-GCM.
+	path := filepath.Join(home, "dpop-key.json")
+	if err := os.WriteFile(path, []byte(`{"alg":"ES256","v":0,"nonce":"","ct":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	km, err := NewKeyManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("expected self-heal, got error: %v", err)
+	}
+	if km.JKT() == "" {
+		t.Fatal("no key generated")
+	}
+	// The rewritten file must now be a valid, reloadable key.
+	km2, err := NewKeyManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("reload after self-heal failed: %v", err)
+	}
+	if km.JKT() != km2.JKT() {
+		t.Fatal("regenerated key was not persisted")
+	}
+}
+
 func TestEphemeralDifferentJKT(t *testing.T) {
 	a := newKM(t, "ephemeral")
 	b := newKM(t, "ephemeral")

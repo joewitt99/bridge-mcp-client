@@ -84,6 +84,16 @@ func TestTamperFailsAuth(t *testing.T) {
 	}
 }
 
+// An empty/zero sealed blob must return an error, NOT panic (a zero-length nonce
+// makes AES-GCM Open panic). This is the cross-machine copy crash repro.
+func TestOpenJSONEmptyBlobErrorsNotPanics(t *testing.T) {
+	home := t.TempDir()
+	var out secret
+	if err := OpenJSON(home, Sealed{}, &out); err == nil {
+		t.Fatal("empty sealed blob should return an error")
+	}
+}
+
 func TestSeedPersistsAcrossCalls(t *testing.T) {
 	home := t.TempDir()
 	sealed, err := SealJSON(home, secret{Token: "persist", N: 7})
