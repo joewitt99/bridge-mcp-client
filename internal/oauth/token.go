@@ -230,14 +230,51 @@ func (c *TokenClient) buildAndPersist(res tokenHTTPResult, kind string, prev *st
 	}
 
 	jkt := c.km.JKT()
-	if res.body.TokenType != "DPoP" {
-		c.logger.Warn("oauth.token.not_dpop_bound", logx.Fields{"token_type": orDefault(res.body.TokenType, "(none)")})
-	}
 
-	// Decode (do NOT verify) and assert the token is bound to our key.
-	if cnf, ok := decodeCnfJKT(res.body.AccessToken); ok && cnf != "" && cnf != jkt {
+	// Decode (do NOT verify) the access token to determine actual DPoP binding.
+	// The token_type label is unreliable: some issuers/BFFs return "Bearer" even
+	// when the JWT carries a matching cnf.jkt. The only proof of binding is cnf.jkt.
+	cnf, isJWT := decodeCnfJKT(res.body.AccessToken)
+	confirmedBound := isJWT && cnf != "" && cnf == jkt
+
+	// Diagnostic: report whether the issued token is actually sender-constrained,
+	// independent of the token_type label. Opaque (non-JWT) tokens can't be
+	// inspected here — binding is enforced by the resource server on introspection.
+	// Logs thumbprints only, never the token.
+	binding := logx.Fields{
+		"token_type": orDefault(res.body.TokenType, "(none)"),
+		"format":     "opaque",
+		"key_jkt":    jkt,
+	}
+	switch {
+	case !isJWT:
+		binding["bound"] = "unknown"
+		binding["note"] = "opaque token — cnf.jkt not inspectable here; resource server enforces binding on introspection"
+	case cnf == "":
+		binding["format"] = "jwt"
+		binding["bound"] = false
+		binding["note"] = "JWT access token has no cnf.jkt — NOT DPoP-bound (issuer/BFF did not bind the proof to the token)"
+	case cnf == jkt:
+		binding["format"] = "jwt"
+		binding["bound"] = true
+		binding["token_jkt"] = cnf
+	default:
+		binding["format"] = "jwt"
+		binding["bound"] = false
+		binding["token_jkt"] = cnf
+	}
+	c.logger.Info("oauth.token.binding", binding)
+
+	if isJWT && cnf != "" && cnf != jkt {
 		c.logger.Error("oauth.token.jkt_mismatch", logx.Fields{"expected": jkt, "got": cnf})
 		return nil, fmt.Errorf("access token cnf.jkt does not match the bridge key")
+	}
+
+	// Warn only when the token is not the DPoP type AND we couldn't confirm it's
+	// actually bound to our key. A confirmed cnf.jkt match means the token IS
+	// sender-constrained even if the issuer mislabeled token_type as "Bearer".
+	if res.body.TokenType != "DPoP" && !confirmedBound {
+		c.logger.Warn("oauth.token.not_dpop_bound", logx.Fields{"token_type": orDefault(res.body.TokenType, "(none)")})
 	}
 
 	set := store.TokenSet{

@@ -1,5 +1,7 @@
 node_modules
 dist
+/okta-mcp-bridge
+okta-mcp-bridge_*
 *.log
 .env
 .okta-mcp-bridge/

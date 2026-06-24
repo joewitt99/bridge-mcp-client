@@ -163,9 +163,16 @@ func TestExchangePersistsJKT(t *testing.T) {
 	}
 }
 
-func TestTokenTypeNotDPoPWarns(t *testing.T) {
+// An opaque (non-JWT) Bearer token can't be confirmed bound here, so warn.
+func TestTokenTypeBearerOpaqueWarns(t *testing.T) {
 	cfg, km, st := setup(t, "")
-	doer, _ := seqDoer(t, successResp(km, map[string]any{"token_type": "Bearer"}))
+	resp := oauthResp(200, map[string]any{
+		"access_token": "opaque-not-a-jwt",
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+		"scope":        "openid offline_access",
+	}, nil)
+	doer, _ := seqDoer(t, resp)
 	buf := &bytes.Buffer{}
 	c := NewTokenClient(cfg, ep, km, st, logx.NewWith(buf, "warn"), doer)
 	if _, err := c.ExchangeCode(context.Background(), codeResult); err != nil {
@@ -173,6 +180,22 @@ func TestTokenTypeNotDPoPWarns(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "oauth.token.not_dpop_bound") {
 		t.Fatalf("expected not_dpop_bound warning; got %q", buf.String())
+	}
+}
+
+// Some issuers/BFFs mislabel token_type as "Bearer" even though the JWT carries
+// a matching cnf.jkt. A confirmed binding means the token IS sender-constrained,
+// so the misleading not_dpop_bound warning must be suppressed.
+func TestTokenTypeBearerButBoundDoesNotWarn(t *testing.T) {
+	cfg, km, st := setup(t, "")
+	doer, _ := seqDoer(t, successResp(km, map[string]any{"token_type": "Bearer"}))
+	buf := &bytes.Buffer{}
+	c := NewTokenClient(cfg, ep, km, st, logx.NewWith(buf, "warn"), doer)
+	if _, err := c.ExchangeCode(context.Background(), codeResult); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "oauth.token.not_dpop_bound") {
+		t.Fatalf("did not expect not_dpop_bound warning for a bound token; got %q", buf.String())
 	}
 }
 
