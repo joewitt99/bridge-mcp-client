@@ -444,10 +444,12 @@ func callCmd(ctx context.Context, cfg config.Config, deps CliDeps, logger *logx.
 	tokenClient := oauth.NewTokenClient(cfg, endpoints, km, st, logger, doer)
 	up := upstream.New(cfg, km, tokenClient, logger, upstream.Deps{Doer: doer})
 
-	// Establish an MCP session first (initialize is an unauthenticated passthrough)
-	// so the target method isn't rejected for protocol reasons rather than auth.
+	// Complete the MCP handshake first (initialize + the initialized notification,
+	// both unauthenticated passthroughs) so the target method isn't rejected for
+	// protocol reasons rather than auth. tools/call needs the full handshake.
 	if parsed.Flags["--no-init"] != "true" {
-		up.ForwardUnauthed(ctx, []byte(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`))
+		up.ForwardUnauthed(ctx, []byte(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"okta-mcp-bridge","version":"demo"}}}`))
+		up.ForwardUnauthed(ctx, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	}
 
 	var token string
